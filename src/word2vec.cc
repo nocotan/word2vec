@@ -20,6 +20,8 @@
 #include <pthread.h>
 
 #include <set>
+#include <random>
+#include <map>
 #include <vector>
 
 #define MAX_STRING 100
@@ -395,7 +397,15 @@ void DestroyNet() {
   }
 }
 
-std::vector<std::set<long long>> memo(vocab_hash_size);
+std::vector<std::map<long long, long long>> memo(vocab_hash_size);
+
+int sign(int freq) {
+    std::random_device rd;
+    std::mt19937 mt(rd());
+    std::uniform_real_distribution<double> dist(0.0, (double)freq);
+    if(dist(mt)>=0.5) return 1;
+    else return 0;
+}
 
 void *TrainModelThread(void *id) {
   long long a, b, d, word, last_word, sentence_length = 0, sentence_position = 0;
@@ -535,25 +545,38 @@ void *TrainModelThread(void *id) {
         }
         // NEGATIVE SAMPLING
         if (negative > 0) for (d = 0; d < negative + 1; d++) {
+          double eps = 1.0;
           if (d == 0) {
             target = word;
             label = 1;
-            memo[word].insert(target);
-            memo[target].insert(word);
+            if(memo[word].find(target)==memo[word].end()) {
+                memo[word][target] = 0;
+                memo[target][word] = 0;
+            } else {
+                ++memo[word][target];
+                ++memo[target][word];
+            }
           } else {
             next_random = next_random * (unsigned long long)25214903917 + 11;
             target = table[(next_random >> 16) % table_size];
             if (target == 0) target = next_random % (vocab_size - 1) + 1;
             if (target == word) continue;
-            if (memo[word].size() != 0 && std::find(memo[word].begin(), memo[word].end(), target)!=memo[word].end()) continue;
-            label = 0;
+            if (memo[word].size() != 0 && memo[word].find(target) != memo[word].end()) {
+                /** shift **/
+                label = sign(memo[word][target]);
+                /** resampling **/
+                //--d;
+                //continue;
+                /** pruning **/
+                // continue
+            } else label = 0;
           }
           l2 = target * layer1_size;
           f = 0;
           for (c = 0; c < layer1_size; c++) f += syn0[c + l1] * syn1neg[c + l2];
           if (f > MAX_EXP) g = (label - 1) * alpha;
-          else if (f < -MAX_EXP) g = (label - 0) * alpha;
-          else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
+          else if (f < -MAX_EXP) g = (label - 0) * alpha * eps;
+          else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha * eps;
           for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
           for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * syn0[c + l1];
         }
